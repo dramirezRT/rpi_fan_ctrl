@@ -1,4 +1,5 @@
 import RPi.GPIO as GPIO
+import datetime
 import time
 import os
 import re
@@ -12,6 +13,19 @@ gpuTemps = [0] * rfc.HYSTERESIS
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(rfc.RPI_CTRL_PIN, GPIO.OUT, initial=GPIO.LOW)
 fan = GPIO.PWM(rfc.RPI_CTRL_PIN, rfc.PWM_FREQ)
+
+if(rfc.PWM_NUM_PINS == 4):
+    rpm = 0
+    GPIO.setup(rfc.RPI_SENSE_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    revolution_time=datetime.datetime.now()
+    def updateRpm(pin):
+        global revolution_time, rpm
+        now = datetime.datetime.now()
+        freq = 1/(now - revolution_time).total_seconds()
+        rpm = freq / 2 * 60
+        revolution_time = now
+        # print("Current rpm: {}".format(rpm), end='\r')
+    GPIO.add_event_detect(rfc.RPI_SENSE_PIN, GPIO.RISING, callback=updateRpm)  # add rising edge detection on a channel
 fan.start(0)
 
 
@@ -32,16 +46,15 @@ in the cfg file
 def getFanPct(temp):
     p1 = (0,0)
     p2 = (0,0)
-    speed = 0
 
     for pair in rfc.FAN_SPEED_MAP:
-        if(temp < pair[0] and p1 == (0,0)):
-            break
-        elif(temp < pair[0]):
+        # if(temp < pair[0] and p1 == (0,0)):
+        #     break
+        if(temp < pair[0]):
             p2 = pair
             break
         p1 = pair
-    if(p1 == (0,0)): return 0 # Turn fan off
+    # if(p1 == (0,0)): return 0 # Turn fan off
 
     # Linear approach between two points
     m = (p2[1] - p1[1]) / (p2[0] - p1[0])
@@ -72,9 +85,13 @@ def getGPUtemp():
     temp = re.match("temp=(\d+.\d*)", gpuTemp).group(1)
     return round(float(temp), 1)
 
-def log(temp, speed):
+def log(temp, speed, rpm):
     with open (os.path.join(scriptDir, 'fan_status'), 'w') as f:
-        f.write("Current fan speed is: {:3.1f} <---> Current MITemp is: {:3.1f}\n".format(speed, temp))
+        if(rfc.PWM_NUM_PINS == 4):
+            f.write("Current fan speed is: {:3.1f}% @ {:4.0f}rpm <---> Current MITemp is: {:3.1f}\n".format(speed,
+                    rpm if speed != 0 else 0, temp))
+        else:
+            f.write("Current fan speed is: {:3.1f}\% <---> Current MITemp is: {:3.1f}\n".format(speed, temp))
 
 def main():
     curFanSpeed = 0
@@ -91,7 +108,10 @@ def main():
             if(newFanSpeed > rfc.FAN_MIN):
                 curFanSpeed = newFanSpeed
                 fan.ChangeDutyCycle(curFanSpeed)
-            log(curTemp, newFanSpeed)
+            else:
+                curFanSpeed = 0
+                fan.ChangeDutyCycle(curFanSpeed)
+            log(curTemp, curFanSpeed, rpm)
             #print("Current fan speed is: {:3.1f} --- Current MITemp is: {:3.1f}".format(curFanSpeed, curTemp), end='\r')
 
             time.sleep(rfc.REFRESH_RATE)
@@ -99,4 +119,5 @@ def main():
         GPIO.cleanup()
 
 if __name__=='__main__':
+    rfc.variable_disclose()
     main()
